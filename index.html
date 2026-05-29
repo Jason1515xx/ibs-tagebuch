@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="IBS Tagebuch">
+  <meta name="theme-color" content="#0d0f18">
+  <title>IBS Tagebuch</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0d0f18; -webkit-tap-highlight-color: transparent; }
+    input, textarea, button { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    input[type=range] {
+      -webkit-appearance: none; appearance: none;
+      width: 100%; height: 6px; border-radius: 3px; background: #252840; outline: none;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 24px; height: 24px;
+      border-radius: 50%; cursor: pointer; border: none;
+    }
+    input[type=date], input[type=time] { -webkit-appearance: none; color-scheme: dark; }
+    textarea { resize: vertical; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-thumb { background: #252840; border-radius: 2px; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback } = React;
+
+const BRISTOL = [
+  { v: 1, desc: "Harte Klumpen" }, { v: 2, desc: "Klumpig" },
+  { v: 3, desc: "Rissig" },        { v: 4, desc: "Glatt ✓" },
+  { v: 5, desc: "Weiche Stücke" }, { v: 6, desc: "Matschig" },
+  { v: 7, desc: "Flüssig" },
+];
+const SYMPTOME = ["Blähungen", "Brennen", "Krämpfe", "Übelkeit"];
+const TRIGGER  = ["Gluten","Laktose","Koffein","Alkohol","Fettiges","Stress",
+                  "Schlafmangel","Rohkost","Zwiebeln","Knoblauch","Hülsenfrüchte",
+                  "Scharf","Sorbit","Fruktose"];
+
+const C = {
+  bg:"#0d0f18", surface:"#13161f", card:"#181b28", border:"#252840",
+  accent:"#818cf8", accentBg:"#818cf820", text:"#e2e8f0",
+  muted:"#64748b", success:"#4ade80", warn:"#fb923c", danger:"#f87171",
+};
+
+const stressColor = v => +v <= 3 ? C.success : +v <= 6 ? C.warn : C.danger;
+const bristolColor = v => (v===3||v===4) ? C.success : (v===2||v===5) ? C.warn : C.danger;
+const nowStr = () => {
+  const d = new Date();
+  return { datum: d.toISOString().split("T")[0], uhrzeit: d.toTimeString().slice(0,5) };
+};
+const EMPTY = () => ({ ...nowStr(), stresslevel:5, bristol:null, haeufigkeit:1, symptome:[], trigger:[], mahlzeiten:"", notizen:"" });
+const fmtDate = d => { const [y,m,day]=d.split("-"); return `${day}.${m}.${y}`; };
+
+const inp = {
+  background:C.card, border:`1px solid ${C.border}`, borderRadius:10,
+  color:C.text, padding:"10px 12px", width:"100%", fontSize:14,
+  boxSizing:"border-box", colorScheme:"dark",
+};
+
+const Label = ({children}) => (
+  <div style={{color:C.muted,fontSize:11,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:8}}>
+    {children}
+  </div>
+);
+const Sec = ({children,mb=22}) => <div style={{marginBottom:mb}}>{children}</div>;
+const Chip = ({active,color,onClick,children}) => (
+  <button onClick={onClick} style={{
+    background:active?(color?`${color}22`:C.accentBg):C.card,
+    border:`1px solid ${active?(color||C.accent):C.border}`,
+    color:active?(color||C.accent):C.muted,
+    borderRadius:20,padding:"6px 13px",fontSize:13,cursor:"pointer",transition:"all 0.15s",
+  }}>{children}</button>
+);
+
+function loadEntries() {
+  try { const r=localStorage.getItem("ibs-v2"); return r?JSON.parse(r):[]; }
+  catch { return []; }
+}
+function saveEntries(data) {
+  try { localStorage.setItem("ibs-v2", JSON.stringify(data)); } catch {}
+}
+
+function App() {
+  const [view,setView]     = useState("neu");
+  const [entries,setEntries] = useState(loadEntries);
+  const [form,setForm]     = useState(EMPTY());
+  const [flash,setFlash]   = useState(false);
+  const [detail,setDetail] = useState(null);
+
+  const persist = data => { setEntries(data); saveEntries(data); };
+
+  const save = () => {
+    if(!form.bristol && form.symptome.length===0) return;
+    persist([...entries,{...form,id:Date.now()}]);
+    setFlash(true); setTimeout(()=>setFlash(false),2000);
+    setForm(EMPTY()); setView("verlauf");
+  };
+  const del = id => { persist(entries.filter(e=>e.id!==id)); setDetail(null); };
+  const toggle = (f,v) => setForm(p=>({...p,[f]:p[f].includes(v)?p[f].filter(x=>x!==v):[...p[f],v]}));
+
+  const ana = useCallback(()=>{
+    if(!entries.length) return null;
+    const tc=Object.fromEntries(TRIGGER.map(t=>[t,0]));
+    const sc=Object.fromEntries(SYMPTOME.map(s=>[s,0]));
+    let ts=0,tb=0,bc=0;
+    entries.forEach(e=>{
+      e.trigger?.forEach(t=>tc[t]!==undefined&&tc[t]++);
+      e.symptome?.forEach(s=>sc[s]!==undefined&&sc[s]++);
+      ts+=e.stresslevel||0;
+      if(e.bristol){tb+=e.bristol;bc++;}
+    });
+    return {
+      n:entries.length,
+      avgStress:(ts/entries.length).toFixed(1),
+      avgBristol:bc?(tb/bc).toFixed(1):null,
+      triggers:Object.entries(tc).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]),
+      symptoms:Object.entries(sc).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]),
+    };
+  },[entries])();
+
+  return (
+    <div style={{background:C.bg,minHeight:"100vh",color:C.text,
+      fontFamily:'-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+      maxWidth:480,margin:"0 auto",paddingBottom:80}}>
+
+      {/* Header */}
+      <div style={{background:C.surface,borderBottom:`1px solid ${C.border}`,
+        padding:"14px 18px",paddingTop:"calc(14px + env(safe-area-inset-top))",
+        display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div>
+          <div style={{fontSize:17,fontWeight:700}}>IBS Tagebuch</div>
+          <div style={{color:C.muted,fontSize:12,marginTop:1}}>
+            {entries.length} Eintrag{entries.length!==1?"e":""}
+          </div>
+        </div>
+        <div style={{fontSize:28}}>🫁</div>
+      </div>
+
+      <div style={{padding:16}}>
+
+        {/* ── NEU ── */}
+        {view==="neu" && <>
+          <Sec>
+            <div style={{display:"flex",gap:10}}>
+              <div style={{flex:1}}>
+                <Label>Datum</Label>
+                <input type="date" style={inp} value={form.datum} onChange={e=>setForm(p=>({...p,datum:e.target.value}))} />
+              </div>
+              <div style={{flex:1}}>
+                <Label>Uhrzeit</Label>
+                <input type="time" style={inp} value={form.uhrzeit} onChange={e=>setForm(p=>({...p,uhrzeit:e.target.value}))} />
+              </div>
+            </div>
+          </Sec>
+
+          <Sec>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:8}}>
+              <Label>Stresslevel</Label>
+              <span style={{fontSize:22,fontWeight:800,color:stressColor(form.stresslevel)}}>
+                {form.stresslevel}<span style={{fontSize:13,color:C.muted}}>/10</span>
+              </span>
+            </div>
+            <input type="range" min={1} max={10} value={form.stresslevel}
+              style={{"--thumb-color":stressColor(form.stresslevel)}}
+              onChange={e=>setForm(p=>({...p,stresslevel:+e.target.value}))} />
+            <style>{`input[type=range]::-webkit-slider-thumb{background:${stressColor(form.stresslevel)}}`}</style>
+            <div style={{display:"flex",justifyContent:"space-between",color:C.muted,fontSize:11,marginTop:2}}>
+              <span>Entspannt</span><span>Sehr gestresst</span>
+            </div>
+          </Sec>
+
+          <Sec>
+            <Label>Bristol-Skala · Stuhlkonsistenz</Label>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:6}}>
+              {BRISTOL.map(b=>(
+                <button key={b.v} onClick={()=>setForm(p=>({...p,bristol:b.v}))} style={{
+                  background:form.bristol===b.v?`${bristolColor(b.v)}22`:C.card,
+                  border:`1px solid ${form.bristol===b.v?bristolColor(b.v):C.border}`,
+                  color:form.bristol===b.v?bristolColor(b.v):C.muted,
+                  borderRadius:8,padding:"8px 4px",fontSize:15,fontWeight:700,cursor:"pointer",
+                  transition:"all 0.15s",
+                }}>{b.v}</button>
+              ))}
+            </div>
+            {form.bristol&&(
+              <div style={{marginTop:8,fontSize:12,color:bristolColor(form.bristol),fontWeight:500}}>
+                Typ {form.bristol} — {BRISTOL[form.bristol-1].desc}
+              </div>
+            )}
+          </Sec>
+
+          <Sec>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:8}}>
+              <Label>Stuhlgang heute</Label>
+              <span style={{fontSize:22,fontWeight:800,color:C.accent}}>
+                {form.haeufigkeit}<span style={{fontSize:13,color:C.muted}}>×</span>
+              </span>
+            </div>
+            <div style={{display:"flex",gap:10,alignItems:"center"}}>
+              <button onClick={()=>setForm(p=>({...p,haeufigkeit:Math.max(0,p.haeufigkeit-1)}))}
+                style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,
+                  color:C.text,width:42,height:42,fontSize:20,cursor:"pointer"}}>−</button>
+              <div style={{flex:1,textAlign:"center",background:C.card,border:`1px solid ${C.border}`,
+                borderRadius:10,padding:"9px 0",fontSize:16,fontWeight:700}}>{form.haeufigkeit}</div>
+              <button onClick={()=>setForm(p=>({...p,haeufigkeit:p.haeufigkeit+1}))}
+                style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,
+                  color:C.text,width:42,height:42,fontSize:20,cursor:"pointer"}}>+</button>
+            </div>
+          </Sec>
+
+          <Sec>
+            <Label>Symptome</Label>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              {SYMPTOME.map(s=><Chip key={s} active={form.symptome.includes(s)} color={C.danger} onClick={()=>toggle("symptome",s)}>{s}</Chip>)}
+            </div>
+          </Sec>
+
+          <Sec>
+            <Label>Mögliche Trigger</Label>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              {TRIGGER.map(t=><Chip key={t} active={form.trigger.includes(t)} color={C.warn} onClick={()=>toggle("trigger",t)}>{t}</Chip>)}
+            </div>
+          </Sec>
+
+          <Sec>
+            <Label>Mahlzeiten</Label>
+            <textarea value={form.mahlzeiten} onChange={e=>setForm(p=>({...p,mahlzeiten:e.target.value}))}
+              placeholder="Was hast du heute gegessen?" rows={3} style={inp} />
+          </Sec>
+
+          <Sec>
+            <Label>Notizen</Label>
+            <textarea value={form.notizen} onChange={e=>setForm(p=>({...p,notizen:e.target.value}))}
+              placeholder="Weitere Beobachtungen…" rows={2} style={inp} />
+          </Sec>
+
+          <button onClick={save} style={{
+            width:"100%",padding:14,borderRadius:12,border:"none",
+            background:flash?C.success:C.accent,color:"#fff",fontSize:15,
+            fontWeight:700,cursor:"pointer",transition:"background 0.3s",
+          }}>{flash?"✓ Gespeichert":"Eintrag speichern"}</button>
+          {!form.bristol&&form.symptome.length===0&&(
+            <div style={{textAlign:"center",color:C.muted,fontSize:12,marginTop:8}}>
+              Mindestens Bristol-Typ oder ein Symptom erforderlich
+            </div>
+          )}
+        </>}
+
+        {/* ── VERLAUF ── */}
+        {view==="verlauf" && <>
+          {entries.length===0?(
+            <div style={{textAlign:"center",color:C.muted,padding:"60px 20px"}}>
+              <div style={{fontSize:48}}>📋</div>
+              <div style={{marginTop:12}}>Noch keine Einträge</div>
+            </div>
+          ):[...entries].reverse().map(e=>(
+            <div key={e.id} onClick={()=>setDetail(detail?.id===e.id?null:e)} style={{
+              background:C.card,border:`1px solid ${detail?.id===e.id?C.accent:C.border}`,
+              borderRadius:12,padding:"13px 14px",marginBottom:10,cursor:"pointer",transition:"border-color 0.15s",
+            }}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                <div>
+                  <div style={{fontWeight:600,fontSize:14}}>{fmtDate(e.datum)} · {e.uhrzeit}</div>
+                  <div style={{display:"flex",gap:12,marginTop:4,fontSize:12}}>
+                    <span style={{color:stressColor(e.stresslevel)}}>Stress {e.stresslevel}/10</span>
+                    {e.bristol&&<span style={{color:bristolColor(e.bristol)}}>Bristol {e.bristol}</span>}
+                    <span style={{color:C.muted}}>{e.haeufigkeit}× Stuhlgang</span>
+                  </div>
+                </div>
+                <div style={{fontSize:12,color:C.muted}}>{detail?.id===e.id?"▲":"▼"}</div>
+              </div>
+              {e.symptome?.length>0&&(
+                <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>
+                  {e.symptome.map(s=><span key={s} style={{background:`${C.danger}22`,color:C.danger,borderRadius:12,padding:"2px 9px",fontSize:11}}>{s}</span>)}
+                </div>
+              )}
+              {e.trigger?.length>0&&(
+                <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:6}}>
+                  {e.trigger.map(t=><span key={t} style={{background:`${C.warn}22`,color:C.warn,borderRadius:12,padding:"2px 9px",fontSize:11}}>{t}</span>)}
+                </div>
+              )}
+              {detail?.id===e.id&&(
+                <div style={{marginTop:12,borderTop:`1px solid ${C.border}`,paddingTop:10}}>
+                  {e.mahlzeiten&&<div style={{color:C.muted,fontSize:13,marginBottom:6}}>🍽 {e.mahlzeiten}</div>}
+                  {e.notizen&&<div style={{color:C.muted,fontSize:13,marginBottom:10}}>📝 {e.notizen}</div>}
+                  <button onClick={ev=>{ev.stopPropagation();del(e.id);}} style={{
+                    background:`${C.danger}22`,border:`1px solid ${C.danger}44`,color:C.danger,
+                    borderRadius:8,padding:"6px 14px",fontSize:12,cursor:"pointer",
+                  }}>Eintrag löschen</button>
+                </div>
+              )}
+            </div>
+          ))}
+        </>}
+
+        {/* ── ANALYSE ── */}
+        {view==="analyse" && <>
+          {!ana?(
+            <div style={{textAlign:"center",color:C.muted,padding:"60px 20px"}}>
+              <div style={{fontSize:48}}>📊</div>
+              <div style={{marginTop:12}}>Noch keine Daten für Analyse</div>
+            </div>
+          ):<>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
+              {[
+                {label:"Einträge",val:ana.n,color:C.accent},
+                {label:"Ø Stresslevel",val:ana.avgStress,color:stressColor(ana.avgStress)},
+                ...(ana.avgBristol?[{label:"Ø Bristol-Typ",val:ana.avgBristol,color:bristolColor(Math.round(ana.avgBristol))}]:[]),
+              ].map(item=>(
+                <div key={item.label} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"14px 16px"}}>
+                  <div style={{color:C.muted,fontSize:11,marginBottom:4}}>{item.label}</div>
+                  <div style={{fontSize:26,fontWeight:800,color:item.color}}>{item.val}</div>
+                </div>
+              ))}
+            </div>
+
+            {ana.symptoms.length>0&&(
+              <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:14,marginBottom:12}}>
+                <div style={{fontWeight:700,marginBottom:12,fontSize:14}}>Symptomhäufigkeit</div>
+                {ana.symptoms.map(([s,cnt])=>(
+                  <div key={s} style={{display:"flex",alignItems:"center",gap:10,marginBottom:9}}>
+                    <div style={{color:C.text,fontSize:13,width:90,flexShrink:0}}>{s}</div>
+                    <div style={{flex:1,background:C.border,borderRadius:4,height:8,overflow:"hidden"}}>
+                      <div style={{background:C.danger,borderRadius:4,height:8,width:`${(cnt/ana.n)*100}%`}} />
+                    </div>
+                    <div style={{color:C.muted,fontSize:12,minWidth:24,textAlign:"right"}}>{cnt}×</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {ana.triggers.length>0&&(
+              <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:14}}>
+                <div style={{fontWeight:700,marginBottom:12,fontSize:14}}>Häufigste Trigger</div>
+                {ana.triggers.slice(0,8).map(([t,cnt])=>(
+                  <div key={t} style={{display:"flex",alignItems:"center",gap:10,marginBottom:9}}>
+                    <div style={{color:C.text,fontSize:13,width:90,flexShrink:0}}>{t}</div>
+                    <div style={{flex:1,background:C.border,borderRadius:4,height:8,overflow:"hidden"}}>
+                      <div style={{background:C.warn,borderRadius:4,height:8,width:`${(cnt/ana.n)*100}%`}} />
+                    </div>
+                    <div style={{color:C.muted,fontSize:12,minWidth:24,textAlign:"right"}}>{cnt}×</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>}
+        </>}
+
+      </div>
+
+      {/* Bottom Nav */}
+      <div style={{
+        position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",
+        width:"100%",maxWidth:480,background:C.surface,borderTop:`1px solid ${C.border}`,
+        display:"flex",paddingBottom:"env(safe-area-inset-bottom)",
+      }}>
+        {[{id:"neu",label:"Neu",icon:"✏️"},{id:"verlauf",label:"Verlauf",icon:"📋"},{id:"analyse",label:"Analyse",icon:"📊"}].map(tab=>(
+          <button key={tab.id} onClick={()=>setView(tab.id)} style={{
+            flex:1,background:"none",border:"none",padding:"10px 8px 12px",
+            color:view===tab.id?C.accent:C.muted,cursor:"pointer",
+            fontSize:11,fontWeight:view===tab.id?700:400,
+            borderTop:`2px solid ${view===tab.id?C.accent:"transparent"}`,
+            transition:"color 0.15s",
+          }}>
+            <div style={{fontSize:20,marginBottom:2}}>{tab.icon}</div>{tab.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+</body>
+</html>
+```
