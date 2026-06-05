@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="IBS Tagebuch">
+  <meta name="theme-color" content="#0d0f18">
+  <title>IBS Tagebuch</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0d0f18; -webkit-tap-highlight-color: transparent; }
+    input, textarea, button, select { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    input[type=range] {
+      -webkit-appearance: none; appearance: none;
+      width: 100%; height: 6px; border-radius: 3px; background: #252840; outline: none;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 24px; height: 24px;
+      border-radius: 50%; cursor: pointer; border: none;
+    }
+    input[type=date], input[type=time] { -webkit-appearance: none; color-scheme: dark; }
+    textarea { resize: vertical; }
+    select { -webkit-appearance: none; appearance: none; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-thumb { background: #252840; border-radius: 2px; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useCallback, useRef } = React;
+
+const BRISTOL = [
+  { v:1, desc:"Harte Klumpen" }, { v:2, desc:"Klumpig" },
+  { v:3, desc:"Rissig" },        { v:4, desc:"Glatt ✓" },
+  { v:5, desc:"Weiche Stücke" }, { v:6, desc:"Matschig" },
+  { v:7, desc:"Flüssig" },
+];
+const SYMPTOME  = ["Blähungen","Brennen","Krämpfe","Übelkeit"];
+const TRIGGER_KATEGORIEN = [
+  { label:"🍽 Ernährung", items:["Gluten","Laktose","Fettiges","Scharf","FODMAP","Fruktose","Zuckeralkohole","Koffein","Alkohol"] },
+  { label:"🧠 Psyche & Stress", items:["Stress","Schlafmangel","Sozialer Druck","Termin / Zeitdruck"] },
+  { label:"🌍 Situation", items:["Unterwegs","Öffentliche Toilette","Unbekannte Umgebung","Arbeit"] },
+];
+const ALLE_TRIGGER = TRIGGER_KATEGORIEN.flatMap(k=>k.items);
+const DRINGLICHKEIT_MAX = 5;
+const MAHLZEIT_ARTEN = ["Frühstück","Mittagessen","Abendessen","Snack"];
+const MAHLZEIT_ICONS = { "Frühstück":"🌅","Mittagessen":"☀️","Abendessen":"🌙","Snack":"🍎" };
+const WOCHENTAGE = ["So","Mo","Di","Mi","Do","Fr","Sa"];
+
+const C = {
+  bg:"#0d0f18", surface:"#13161f", card:"#181b28", border:"#252840",
+  accent:"#818cf8", accentBg:"#818cf820", text:"#e2e8f0",
+  muted:"#64748b", success:"#4ade80", warn:"#fb923c", danger:"#f87171",
+};
+
+const stressColor  = v => +v<=3 ? C.success : +v<=6 ? C.warn : C.danger;
+const schmerzColor = v => +v<=3 ? C.success : +v<=6 ? C.warn : C.danger;
+const bristolColor = v => (v===3||v===4) ? C.success : (v===2||v===5) ? C.warn : C.danger;
+
+const nowStr = () => {
+  const d = new Date();
+  return { datum: d.toISOString().split("T")[0], uhrzeit: d.toTimeString().slice(0,5) };
+};
+const newMahlzeit = () => ({ id: Date.now()+Math.random(), art:"Frühstück", uhrzeit:"", inhalt:"" });
+const dringlichkeitColor = v => v<=1 ? C.success : v<=2 ? "#a3e635" : v<=3 ? C.warn : v<=4 ? "#f97316" : C.danger;
+const EMPTY = () => ({
+  ...nowStr(),
+  bristol: null,
+  symptome: [],
+  dringlichkeit: 1,
+  schmerz: 0,
+  stresslevel: 5,
+  trigger: [],
+  blut: false,
+  mahlzeiten: [newMahlzeit()],
+  notizen: "",
+});
+const fmtDate = d => { const [y,m,day]=d.split("-"); return `${day}.${m}.${y}`; };
+const fmtDateLong = d => {
+  const date = new Date(d+"T12:00:00");
+  return date.toLocaleDateString("de-DE",{weekday:"long",day:"numeric",month:"long"});
+};
+
+const inp = {
+  background:C.card, border:`1px solid ${C.border}`, borderRadius:10,
+  color:C.text, padding:"10px 12px", width:"100%", fontSize:14,
+  boxSizing:"border-box", colorScheme:"dark",
+};
+const Label = ({children}) => (
+  <div style={{color:C.muted,fontSize:11,fontWeight:700,letterSpacing:"0.08em",
+    textTransform:"uppercase",marginBottom:8}}>{children}</div>
+);
+const Sec = ({children,mb=20}) => <div style={{marginBottom:mb}}>{children}</div>;
+const Chip = ({active,color,onClick,children}) => (
+  <button onClick={onClick} style={{
+    background:active?(color?`${color}22`:C.accentBg):C.card,
+    border:`1px solid ${active?(color||C.accent):C.border}`,
+    color:active?(color||C.accent):C.muted,
+    borderRadius:20,padding:"6px 13px",fontSize:13,cursor:"pointer",transition:"all 0.15s",
+  }}>{children}</button>
+);
+const Bar = ({pct,color}) => (
+  <div style={{flex:1,background:C.border,borderRadius:4,height:8,overflow:"hidden"}}>
+    <div style={{background:color,borderRadius:4,height:8,width:`${pct}%`,transition:"width 0.5s"}} />
+  </div>
+);
+
+function loadEntries() {
+  try { const r=localStorage.getItem("ibs-v5"); return r?JSON.parse(r):[]; } catch { return []; }
+}
+function saveEntries(data) {
+  try { localStorage.setItem("ibs-v5",JSON.stringify(data)); } catch {}
+}
+
+function EntryForm({ initial, onSave, onCancel, editMode }) {
+  const [form, setForm] = useState(initial);
+  const [flash, setFlash] = useState(false);
+  const [mahlzeitenOpen, setMahlzeitenOpen] = useState(false);
+
+  const toggle = (f,v) => setForm(p=>({...p,[f]:p[f].includes(v)?p[f].filter(x=>x!==v):[...p[f],v]}));
+  const addM   = () => setForm(p=>({...p,mahlzeiten:[...p.mahlzeiten,newMahlzeit()]}));
+  const delM   = id => setForm(p=>({...p,mahlzeiten:p.mahlzeiten.filter(m=>m.id!==id)}));
+  const updM   = (id,f,v) => setForm(p=>({...p,mahlzeiten:p.mahlzeiten.map(m=>m.id===id?{...m,[f]:v}:m)}));
+
+  const valid = form.bristol !== null;
+
+  const handleSave = () => {
+    if(!valid) return;
+    setFlash(true);
+    setTimeout(()=>onSave(form), 350);
+  };
+
+  return (
+    <div>
+      {editMode&&(
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:18}}>
+          <button onClick={onCancel} style={{background:"none",border:"none",color:C.muted,fontSize:22,cursor:"pointer",padding:0}}>←</button>
+          <div style={{fontWeight:700,fontSize:16}}>Eintrag bearbeiten</div>
+        </div>
+      )}
+
+      {/* Datum / Uhrzeit */}
+      <Sec>
+        <div style={{display:"flex",gap:10}}>
+          <div style={{flex:1}}>
+            <Label>Datum</Label>
+            <input type="date" style={inp} value={form.datum} onChange={e=>setForm(p=>({...p,datum:e.target.value}))} />
+          </div>
+          <div style={{flex:1}}>
+            <Label>Uhrzeit</Label>
+            <input type="time" style={inp} value={form.uhrzeit} onChange={e=>setForm(p=>({...p,uhrzeit:e.target.value}))} />
+          </div>
+        </div>
+      </Sec>
+
+      {/* Bristol */}
+      <Sec>
+        <Label>Bristol-Skala <span style={{color:C.danger}}>*</span></Label>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:5}}>
+          {BRISTOL.map(b=>(
+            <button key={b.v} onClick={()=>setForm(p=>({...p,bristol:b.v}))} style={{
+              background:form.bristol===b.v?`${bristolColor(b.v)}22`:C.card,
+              border:`1px solid ${form.bristol===b.v?bristolColor(b.v):C.border}`,
+              color:form.bristol===b.v?bristolColor(b.v):C.muted,
+              borderRadius:8,padding:"9px 4px",fontSize:15,fontWeight:700,cursor:"pointer",transition:"all 0.15s",
+            }}>{b.v}</button>
+          ))}
+        </div>
+        {form.bristol&&(
+          <div style={{marginTop:7,fontSize:12,color:bristolColor(form.bristol),fontWeight:500}}>
+            Typ {form.bristol} — {BRISTOL[form.bristol-1].desc}
+          </div>
+        )}
+      </Sec>
+
+      {/* Symptome */}
+      <Sec>
+        <Label>Symptome</Label>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          {SYMPTOME.map(s=><Chip key={s} active={form.symptome.includes(s)} color={C.danger} onClick={()=>toggle("symptome",s)}>{s}</Chip>)}
+        </div>
+      </Sec>
+
+      {/* Dringlichkeit 1–5 */}
+      <Sec>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:8}}>
+          <Label>Dringlichkeit</Label>
+          <span style={{fontSize:22,fontWeight:800,color:dringlichkeitColor(form.dringlichkeit)}}>
+            {form.dringlichkeit}<span style={{fontSize:13,color:C.muted}}>/5</span>
+          </span>
+        </div>
+        <div style={{display:"flex",gap:6}}>
+          {[1,2,3,4,5].map(v=>(
+            <button key={v} onClick={()=>setForm(p=>({...p,dringlichkeit:v}))} style={{
+              flex:1,padding:"9px 0",borderRadius:8,fontSize:14,fontWeight:700,cursor:"pointer",
+              background:form.dringlichkeit===v?`${dringlichkeitColor(v)}22`:C.card,
+              border:`1px solid ${form.dringlichkeit===v?dringlichkeitColor(v):C.border}`,
+              color:form.dringlichkeit===v?dringlichkeitColor(v):C.muted,
+              transition:"all 0.15s",
+            }}>{v}</button>
+          ))}
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",color:C.muted,fontSize:11,marginTop:4}}>
+          <span>Keine Eile</span><span>Sofort</span>
+        </div>
+      </Sec>
+
+      {/* Schmerz */}
+      <Sec>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:8}}>
+          <Label>Schmerzniveau</Label>
+          <span style={{fontSize:22,fontWeight:800,color:form.schmerz===0?C.muted:schmerzColor(form.schmerz)}}>
+            {form.schmerz}<span style={{fontSize:13,color:C.muted}}>/10</span>
+          </span>
+        </div>
+        <input type="range" min={0} max={10} value={form.schmerz}
+          onChange={e=>setForm(p=>({...p,schmerz:+e.target.value}))} />
+        <style>{`input[type=range]::-webkit-slider-thumb{background:${form.schmerz===0?C.muted:schmerzColor(form.schmerz)}}`}</style>
+        <div style={{display:"flex",justifyContent:"space-between",color:C.muted,fontSize:11,marginTop:2}}>
+          <span>Kein Schmerz</span><span>Starker Schmerz</span>
+        </div>
+      </Sec>
+
+      {/* Stress */}
+      <Sec>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:8}}>
+          <Label>Stresslevel</Label>
+          <span style={{fontSize:22,fontWeight:800,color:stressColor(form.stresslevel)}}>
+            {form.stresslevel}<span style={{fontSize:13,color:C.muted}}>/10</span>
+          </span>
+        </div>
+        <input type="range" min={1} max={10} value={form.stresslevel}
+          onChange={e=>setForm(p=>({...p,stresslevel:+e.target.value}))} />
+        <div style={{display:"flex",justifyContent:"space-between",color:C.muted,fontSize:11,marginTop:2}}>
+          <span>Entspannt</span><span>Sehr gestresst</span>
+        </div>
+      </Sec>
+
+      {/* Trigger nach Kategorie */}
+      <Sec>
+        <Label>Mögliche Trigger</Label>
+        {TRIGGER_KATEGORIEN.map(kat=>(
+          <div key={kat.label} style={{marginBottom:12}}>
+            <div style={{fontSize:12,color:C.muted,fontWeight:600,marginBottom:6}}>{kat.label}</div>
+            <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
+              {kat.items.map(t=><Chip key={t} active={form.trigger.includes(t)} color={C.warn} onClick={()=>toggle("trigger",t)}>{t}</Chip>)}
+            </div>
+          </div>
+        ))}
+      </Sec>
+
+      {/* Blut */}
+      <Sec>
+        <Label>Blut im Stuhl</Label>
+        <div style={{display:"flex",gap:8}}>
+          <Chip active={!form.blut} color={C.success} onClick={()=>setForm(p=>({...p,blut:false}))}>Nein</Chip>
+          <Chip active={form.blut} color={C.danger} onClick={()=>setForm(p=>({...p,blut:true}))}>Ja</Chip>
+        </div>
+      </Sec>
+
+      {/* Notizen */}
+      <Sec>
+        <Label>Notizen</Label>
+        <textarea value={form.notizen} onChange={e=>setForm(p=>({...p,notizen:e.target.value}))}
+          placeholder="Weitere Beobachtungen…" rows={2} style={inp} />
+      </Sec>
+
+      {/* Mahlzeiten (eingeklappt) */}
+      <Sec>
+        <button onClick={()=>setMahlzeitenOpen(o=>!o)} style={{
+          width:"100%",background:C.card,border:`1px solid ${C.border}`,borderRadius:10,
+          color:C.muted,padding:"10px 14px",fontSize:13,cursor:"pointer",
+          display:"flex",justifyContent:"space-between",alignItems:"center",
+        }}>
+          <span>🍽 Mahlzeiten {form.mahlzeiten.some(m=>m.inhalt)?"✓":""}</span>
+          <span>{mahlzeitenOpen?"▲":"▼"}</span>
+        </button>
+        {mahlzeitenOpen&&(
+          <div style={{marginTop:10}}>
+            {form.mahlzeiten.map(m=>(
+              <div key={m.id} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:12,marginBottom:10}}>
+                <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"center"}}>
+                  <div style={{position:"relative",flex:1}}>
+                    <select value={m.art} onChange={e=>updM(m.id,"art",e.target.value)}
+                      style={{...inp,padding:"9px 12px",paddingRight:28,cursor:"pointer"}}>
+                      {MAHLZEIT_ARTEN.map(a=><option key={a} value={a}>{MAHLZEIT_ICONS[a]} {a}</option>)}
+                    </select>
+                    <span style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",color:C.muted,pointerEvents:"none",fontSize:12}}>▼</span>
+                  </div>
+                  <input type="time" value={m.uhrzeit} onChange={e=>updM(m.id,"uhrzeit",e.target.value)}
+                    style={{...inp,width:"auto",flex:"0 0 108px"}} />
+                  {form.mahlzeiten.length>1&&(
+                    <button onClick={()=>delM(m.id)} style={{background:"none",border:"none",color:C.muted,fontSize:18,cursor:"pointer",padding:"0 4px",lineHeight:1}}>✕</button>
+                  )}
+                </div>
+                <textarea value={m.inhalt} rows={2} onChange={e=>updM(m.id,"inhalt",e.target.value)}
+                  placeholder={`Was gab es zum ${m.art}?`} style={{...inp,display:"block"}} />
+              </div>
+            ))}
+            <button onClick={addM} style={{
+              background:C.accentBg,border:`1px solid ${C.accent}`,color:C.accent,
+              borderRadius:16,padding:"5px 14px",fontSize:12,cursor:"pointer",fontWeight:600,
+            }}>+ Mahlzeit hinzufügen</button>
+          </div>
+        )}
+      </Sec>
+
+      <button onClick={handleSave} style={{
+        width:"100%",padding:14,borderRadius:12,border:"none",
+        background:flash?C.success:valid?C.accent:C.border,
+        color:valid?"#fff":C.muted,fontSize:15,fontWeight:700,
+        cursor:valid?"pointer":"not-allowed",transition:"background 0.3s",
+      }}>{flash?"✓ Gespeichert":editMode?"Änderungen speichern":"Eintrag speichern"}</button>
+      {!valid&&(
+        <div style={{textAlign:"center",color:C.muted,fontSize:12,marginTop:8}}>
+          Bristol-Typ ist erforderlich
+        </div>
+      )}
+    </div>
+  );
+}
+
+function App() {
+  const [view,setView]           = useState("neu");
+  const [entries,setEntries]     = useState(loadEntries);
+  const [detail,setDetail]       = useState(null);
+  const [editEntry,setEditEntry] = useState(null);
+  const [importMsg,setImportMsg] = useState(null);
+  const fileInputRef             = useRef();
+
+  const persist    = data => { setEntries(data); saveEntries(data); };
+  const handleNew  = form => { persist([...entries,{...form,id:Date.now()}]); };
+  const handleEdit = form => { persist(entries.map(e=>e.id===form.id?form:e)); setEditEntry(null); setDetail(null); setView("verlauf"); };
+  const del        = id => { persist(entries.filter(e=>e.id!==id)); setDetail(null); };
+
+  const exportData = () => {
+    const blob=new Blob([JSON.stringify(entries,null,2)],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url; a.download=`ibs-tagebuch-${new Date().toISOString().split("T")[0]}.json`;
+    a.click(); URL.revokeObjectURL(url);
+  };
+  const importData = e => {
+    const file=e.target.files[0]; if(!file) return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      try {
+        const data=JSON.parse(ev.target.result);
+        if(!Array.isArray(data)) throw new Error();
+        persist(data);
+        setImportMsg(`✓ ${data.length} Einträge importiert`);
+        setTimeout(()=>setImportMsg(null),3000);
+      } catch { setImportMsg("✕ Ungültige Datei"); setTimeout(()=>setImportMsg(null),3000); }
+    };
+    reader.readAsText(file); e.target.value="";
+  };
+
+  // Einträge nach Tag gruppieren
+  const grouped = useCallback(()=>{
+    const map = {};
+    [...entries].sort((a,b)=>b.datum.localeCompare(a.datum)||(b.uhrzeit||"").localeCompare(a.uhrzeit||""))
+      .forEach(e=>{ if(!map[e.datum]) map[e.datum]=[]; map[e.datum].push(e); });
+    return Object.entries(map);
+  },[entries])();
+
+  // Analyse
+  const ana = useCallback(()=>{
+    if(!entries.length) return null;
+    const tc=Object.fromEntries(ALLE_TRIGGER.map(t=>[t,0]));
+    const sc=Object.fromEntries(SYMPTOME.map(s=>[s,0]));
+    const wdCount=Array(7).fill(0), wdTotal=Array(7).fill(0);
+    let ts=0,pain=0,allBristol=[];
+    entries.forEach(e=>{
+      e.trigger?.forEach(t=>tc[t]!==undefined&&tc[t]++);
+      e.symptome?.forEach(s=>sc[s]!==undefined&&sc[s]++);
+      ts+=e.stresslevel||0;
+      pain+=e.schmerz||0;
+      if(e.bristol) allBristol.push(e.bristol);
+      const wd=new Date(e.datum+"T12:00:00").getDay();
+      wdCount[wd]++; wdTotal[wd]++;
+    });
+    const days=Object.keys(Object.fromEntries(entries.map(e=>[e.datum,1]))).length||1;
+    return {
+      n:entries.length, days,
+      avgPerDay:(entries.length/days).toFixed(1),
+      avgStress:(ts/entries.length).toFixed(1),
+      avgPain:(pain/entries.length).toFixed(1),
+      avgBristol:allBristol.length?(allBristol.reduce((a,b)=>a+b,0)/allBristol.length).toFixed(1):null,
+      triggers:Object.entries(tc).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]),
+      symptoms:Object.entries(sc).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]),
+      wdCount,
+    };
+  },[entries])();
+
+  return (
+    <div style={{background:C.bg,minHeight:"100vh",color:C.text,
+      fontFamily:'-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+      maxWidth:480,margin:"0 auto",paddingBottom:80}}>
+
+      {/* Header */}
+      <div style={{background:C.surface,borderBottom:`1px solid ${C.border}`,
+        padding:"14px 18px",paddingTop:"calc(14px + env(safe-area-inset-top))",
+        display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div>
+          <div style={{fontSize:17,fontWeight:700}}>IBS Tagebuch</div>
+          <div style={{color:C.muted,fontSize:12,marginTop:1}}>{entries.length} Einträge · {grouped.length} Tage</div>
+        </div>
+        <div style={{fontSize:28}}>🫁</div>
+      </div>
+
+      <div style={{padding:16}}>
+
+        {/* ── NEU ── */}
+        {view==="neu"&&!editEntry&&<EntryForm initial={EMPTY()} onSave={handleNew} editMode={false} />}
+
+        {/* ── BEARBEITEN ── */}
+        {editEntry&&<EntryForm initial={editEntry} onSave={handleEdit} onCancel={()=>setEditEntry(null)} editMode={true} />}
+
+        {/* ── VERLAUF ── */}
+        {view==="verlauf"&&!editEntry&&<>
+          {grouped.length===0?(
+            <div style={{textAlign:"center",color:C.muted,padding:"60px 20px"}}>
+              <div style={{fontSize:48}}>📋</div>
+              <div style={{marginTop:12}}>Noch keine Einträge</div>
+            </div>
+          ):grouped.map(([datum,tagesEntries])=>(
+            <div key={datum} style={{marginBottom:20}}>
+              {/* Tag-Header */}
+              <div style={{fontSize:13,fontWeight:700,color:C.accent,marginBottom:8,
+                display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <span>{fmtDateLong(datum)}</span>
+                <span style={{color:C.muted,fontWeight:400}}>{tagesEntries.length}×</span>
+              </div>
+              {tagesEntries.map(e=>(
+                <div key={e.id} onClick={()=>setDetail(detail?.id===e.id?null:e)} style={{
+                  background:C.card,border:`1px solid ${detail?.id===e.id?C.accent:C.border}`,
+                  borderRadius:12,padding:"12px 14px",marginBottom:8,cursor:"pointer",transition:"border-color 0.15s",
+                }}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:10}}>
+                      <span style={{fontSize:13,color:C.muted}}>{e.uhrzeit}</span>
+                      {e.bristol&&<span style={{
+                        background:`${bristolColor(e.bristol)}22`,color:bristolColor(e.bristol),
+                        borderRadius:10,padding:"2px 10px",fontSize:12,fontWeight:700,
+                      }}>Bristol {e.bristol}</span>}
+                      {e.dringlichkeit&&e.dringlichkeit!=="Normal"&&<span style={{
+                        background:e.dringlichkeit==="Sehr dringend"?`${C.danger}22`:`${C.warn}22`,
+                        color:e.dringlichkeit==="Sehr dringend"?C.danger:C.warn,
+                        borderRadius:10,padding:"2px 9px",fontSize:11,
+                      }}>{e.dringlichkeit}</span>}
+                      {e.blut&&<span style={{color:C.danger,fontSize:12,fontWeight:700}}>🩸</span>}
+                    </div>
+                    <span style={{fontSize:11,color:C.muted}}>{detail?.id===e.id?"▲":"▼"}</span>
+                  </div>
+
+                  {e.symptome?.length>0&&(
+                    <div style={{display:"flex",gap:5,flexWrap:"wrap",marginTop:7}}>
+                      {e.symptome.map(s=><span key={s} style={{background:`${C.danger}22`,color:C.danger,borderRadius:10,padding:"2px 8px",fontSize:11}}>{s}</span>)}
+                    </div>
+                  )}
+                  {e.trigger?.length>0&&(
+                    <div style={{display:"flex",gap:5,flexWrap:"wrap",marginTop:5}}>
+                      {e.trigger.map(t=><span key={t} style={{background:`${C.warn}22`,color:C.warn,borderRadius:10,padding:"2px 8px",fontSize:11}}>{t}</span>)}
+                    </div>
+                  )}
+
+                  {detail?.id===e.id&&(
+                    <div style={{marginTop:12,borderTop:`1px solid ${C.border}`,paddingTop:10}}>
+                      <div style={{display:"flex",gap:16,fontSize:12,marginBottom:10}}>
+                        <span style={{color:stressColor(e.stresslevel)}}>Stress {e.stresslevel}/10</span>
+                        {e.schmerz>0&&<span style={{color:schmerzColor(e.schmerz)}}>Schmerz {e.schmerz}/10</span>}
+                        {e.blut&&<span style={{color:C.danger,fontWeight:600}}>🩸 Blut</span>}
+                      </div>
+                      {e.mahlzeiten?.filter(m=>m.inhalt).map(m=>(
+                        <div key={m.id} style={{marginBottom:6,padding:"7px 10px",background:C.surface,borderRadius:8}}>
+                          <div style={{fontSize:11,color:C.accent,fontWeight:600,marginBottom:2}}>
+                            {MAHLZEIT_ICONS[m.art]} {m.art}{m.uhrzeit?` · ${m.uhrzeit}`:""}
+                          </div>
+                          <div style={{fontSize:13,color:C.muted}}>{m.inhalt}</div>
+                        </div>
+                      ))}
+                      {e.notizen&&<div style={{color:C.muted,fontSize:13,marginBottom:10,marginTop:4}}>📝 {e.notizen}</div>}
+                      <div style={{display:"flex",gap:8}}>
+                        <button onClick={ev=>{ev.stopPropagation();setEditEntry(e);}} style={{
+                          flex:1,background:C.accentBg,border:`1px solid ${C.accent}`,color:C.accent,
+                          borderRadius:8,padding:"8px 0",fontSize:12,fontWeight:600,cursor:"pointer",
+                        }}>✏️ Bearbeiten</button>
+                        <button onClick={ev=>{ev.stopPropagation();del(e.id);}} style={{
+                          flex:1,background:`${C.danger}22`,border:`1px solid ${C.danger}44`,color:C.danger,
+                          borderRadius:8,padding:"8px 0",fontSize:12,fontWeight:600,cursor:"pointer",
+                        }}>🗑 Löschen</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ))}
+        </>}
+
+        {/* ── ANALYSE ── */}
+        {view==="analyse"&&!editEntry&&<>
+          {!ana?(
+            <div style={{textAlign:"center",color:C.muted,padding:"60px 20px"}}>
+              <div style={{fontSize:48}}>📊</div>
+              <div style={{marginTop:12}}>Noch keine Daten für Analyse</div>
+            </div>
+          ):<>
+            {/* Kennzahlen */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+              {[
+                {label:"Einträge gesamt",val:ana.n,color:C.accent},
+                {label:"Ø pro Tag",val:ana.avgPerDay,color:C.accent},
+                {label:"Ø Stresslevel",val:ana.avgStress,color:stressColor(ana.avgStress)},
+                {label:"Ø Schmerz",val:ana.avgPain,color:schmerzColor(ana.avgPain)},
+                ...(ana.avgBristol?[{label:"Ø Bristol-Typ",val:ana.avgBristol,color:bristolColor(Math.round(ana.avgBristol))}]:[]),
+              ].map(item=>(
+                <div key={item.label} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"13px 14px"}}>
+                  <div style={{color:C.muted,fontSize:11,marginBottom:4}}>{item.label}</div>
+                  <div style={{fontSize:24,fontWeight:800,color:item.color}}>{item.val}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Wochentage */}
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:14,marginBottom:12}}>
+              <div style={{fontWeight:700,marginBottom:12,fontSize:14}}>Einträge nach Wochentag</div>
+              <div style={{display:"flex",gap:6,alignItems:"flex-end",height:60}}>
+                {ana.wdCount.map((cnt,i)=>{
+                  const max=Math.max(...ana.wdCount,1);
+                  return (
+                    <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+                      <div style={{fontSize:10,color:C.muted}}>{cnt||""}</div>
+                      <div style={{width:"100%",background:`${C.accent}22`,borderRadius:4,
+                        height:`${Math.max((cnt/max)*44,cnt>0?6:2)}px`,
+                        background:cnt>0?`${C.accent}55`:C.border,transition:"height 0.4s"}} />
+                      <div style={{fontSize:10,color:C.muted,fontWeight:600}}>{WOCHENTAGE[i]}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Symptome */}
+            {ana.symptoms.length>0&&(
+              <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:14,marginBottom:12}}>
+                <div style={{fontWeight:700,marginBottom:12,fontSize:14}}>Symptomhäufigkeit</div>
+                {ana.symptoms.map(([s,cnt])=>(
+                  <div key={s} style={{display:"flex",alignItems:"center",gap:10,marginBottom:9}}>
+                    <div style={{color:C.text,fontSize:13,width:90,flexShrink:0}}>{s}</div>
+                    <Bar pct={(cnt/ana.n)*100} color={C.danger} />
+                    <div style={{color:C.muted,fontSize:12,minWidth:28,textAlign:"right"}}>{cnt}×</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Trigger */}
+            {ana.triggers.length>0&&(
+              <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:14,marginBottom:14}}>
+                <div style={{fontWeight:700,marginBottom:12,fontSize:14}}>Häufigste Trigger</div>
+                {ana.triggers.slice(0,8).map(([t,cnt])=>(
+                  <div key={t} style={{display:"flex",alignItems:"center",gap:10,marginBottom:9}}>
+                    <div style={{color:C.text,fontSize:13,width:90,flexShrink:0}}>{t}</div>
+                    <Bar pct={(cnt/ana.n)*100} color={C.warn} />
+                    <div style={{color:C.muted,fontSize:12,minWidth:28,textAlign:"right"}}>{cnt}×</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Export / Import */}
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:16}}>
+              <div style={{fontWeight:700,fontSize:14,marginBottom:4}}>Datensicherung</div>
+              <div style={{color:C.muted,fontSize:12,marginBottom:14}}>Daten als JSON exportieren oder Sicherung wiederherstellen.</div>
+              <div style={{display:"flex",gap:10}}>
+                <button onClick={exportData} disabled={entries.length===0} style={{
+                  flex:1,padding:"11px 0",borderRadius:10,border:`1px solid ${C.accent}`,
+                  background:C.accentBg,color:entries.length===0?C.muted:C.accent,
+                  fontSize:13,fontWeight:600,cursor:entries.length===0?"not-allowed":"pointer",
+                }}>⬇ Exportieren</button>
+                <button onClick={()=>fileInputRef.current.click()} style={{
+                  flex:1,padding:"11px 0",borderRadius:10,border:`1px solid ${C.border}`,
+                  background:C.surface,color:C.text,fontSize:13,fontWeight:600,cursor:"pointer",
+                }}>⬆ Importieren</button>
+              </div>
+              <input ref={fileInputRef} type="file" accept=".json" onChange={importData} style={{display:"none"}} />
+              {importMsg&&(
+                <div style={{marginTop:10,textAlign:"center",fontSize:13,
+                  color:importMsg.startsWith("✓")?C.success:C.danger,fontWeight:600}}>{importMsg}</div>
+              )}
+            </div>
+          </>}
+        </>}
+      </div>
+
+      {!editEntry&&(
+        <div style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",
+          width:"100%",maxWidth:480,background:C.surface,borderTop:`1px solid ${C.border}`,
+          display:"flex",paddingBottom:"env(safe-area-inset-bottom)"}}>
+          {[{id:"neu",label:"Neu",icon:"✏️"},{id:"verlauf",label:"Verlauf",icon:"📋"},{id:"analyse",label:"Analyse",icon:"📊"}].map(tab=>(
+            <button key={tab.id} onClick={()=>setView(tab.id)} style={{
+              flex:1,background:"none",border:"none",padding:"10px 8px 12px",
+              color:view===tab.id?C.accent:C.muted,cursor:"pointer",
+              fontSize:11,fontWeight:view===tab.id?700:400,
+              borderTop:`2px solid ${view===tab.id?C.accent:"transparent"}`,
+              transition:"color 0.15s",
+            }}>
+              <div style={{fontSize:20,marginBottom:2}}>{tab.icon}</div>{tab.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+</body>
+</html>
